@@ -142,10 +142,9 @@ fn run() -> Result<()> {
     {
         match bootloader_result {
             Ok(ref mut bl) => {
-                if let (Some(data_dev), Some(rootblk)) = (
-                    layout.partitions.get(partition_names::DATA),
-                    layout.partitions.get(partition_names::ROOTBLK),
-                ) {
+                if let Some(data_dev) = layout.partitions.get(partition_names::DATA) {
+                    // rootblk is the base disk device, not a partition entry
+                    let rootblk = &layout.device.base;
                     omnect_os_init::runtime::resize_data::resize_data_if_needed(
                         data_dev,
                         rootblk,
@@ -153,7 +152,7 @@ fn run() -> Result<()> {
                         bl.as_mut(),
                     )?;
                 } else {
-                    warn!("resize-data: data or rootblk device not found in partition map");
+                    warn!("resize-data: data device not found in partition map");
                 }
             }
             Err(ref e) => {
