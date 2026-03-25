@@ -11,8 +11,8 @@ use crate::bootloader::{Bootloader, vars};
 use crate::error::{ResizeDataError, Result};
 use crate::partition::PartitionTableType;
 
-const SGDISK_CMD: &str = "/usr/sbin/sgdisk";
-const PARTED_CMD: &str = "/usr/sbin/parted";
+const SGDISK_CMD: &str = "/sbin/sgdisk";
+const PARTED_CMD: &str = "/sbin/parted";
 const E2FSCK_CMD: &str = "/sbin/e2fsck";
 const RESIZE2FS_CMD: &str = "/sbin/resize2fs";
 const SYNC_CMD: &str = "/bin/sync";
