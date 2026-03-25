@@ -51,7 +51,7 @@ cargo build --release --features "grub,persistent-var-log,resize-data"
 | `flash-mode-1` | Disk cloning | Planned |
 | `flash-mode-2` | Network flashing | Planned |
 | `flash-mode-3` | HTTP/HTTPS flashing | Planned |
-| `resize-data` | Data partition auto-resize | Planned |
+| `resize-data` | Data partition auto-resize | Implemented |
 
 > **Note:** `grub` and `uboot` are mutually exclusive. Exactly one must be set at build time.
 > The Yocto recipe selects the correct feature via `CARGO_FEATURES` based on `MACHINE_FEATURES`.

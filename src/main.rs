@@ -134,9 +134,12 @@ fn run() -> Result<()> {
     }
     info!("release={}", config.is_release_image);
 
-    // Resize data partition before mounting it (first boot only, feature-gated).
+    // Resize data partition before mounting it (first boot only).
+    // The resize-data script is installed by Yocto only when DISTRO_FEATURES
+    // contains "resize-data"; the cargo feature flag mirrors that build-time
+    // decision. No runtime os-release check is needed.
     #[cfg(feature = "resize-data")]
-    if config.has_resize_data() {
+    {
         match bootloader_result {
             Ok(ref mut bl) => {
                 if let (Some(data_dev), Some(rootblk)) = (
