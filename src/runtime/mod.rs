@@ -7,6 +7,8 @@
 
 mod fs_link;
 mod omnect_device_service;
+#[cfg(feature = "resize-data")]
+pub mod resize_data;
 mod switch_root;
 
 pub use self::fs_link::create_fs_links;

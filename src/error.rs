@@ -33,6 +33,9 @@ pub enum InitramfsError {
     #[error("Flash mode error: {0}")]
     FlashMode(#[from] FlashModeError),
 
+    #[error("Resize data error: {0}")]
+    ResizeData(#[from] ResizeDataError),
+
     #[error("Logging error: {0}")]
     Logging(#[from] LoggingError),
 
@@ -195,6 +198,26 @@ pub enum FlashModeError {
 
     #[error("Download failed: {0}")]
     DownloadFailed(String),
+
+    #[error("IO error: {0}")]
+    Io(#[from] std::io::Error),
+}
+
+/// Errors related to data partition resize
+#[derive(Error, Debug)]
+pub enum ResizeDataError {
+    #[error("Command '{command}' failed with code {code}: {output}")]
+    CommandFailed {
+        command: String,
+        code: i32,
+        output: String,
+    },
+
+    #[error("Could not determine partition number from device path: {}", .0.display())]
+    InvalidDevicePath(PathBuf),
+
+    #[error("Could not find extended partition on {}", .0.display())]
+    ExtendedPartitionNotFound(PathBuf),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

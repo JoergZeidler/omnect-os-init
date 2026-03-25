@@ -106,32 +106,75 @@ fn run() -> Result<()> {
     // Initialize ODS status
     let mut ods_status = OdsStatus::new();
 
-    // Run fsck on partitions and mount them.
-    // Boot partition must be mounted before create_bootloader() so that
-    // GrubBootloader can access the grubenv file at rootfs/boot/EFI/BOOT/grubenv.
-    let mount_result = mount_partitions(&mut mount_manager, &layout, &config, &mut ods_status);
+    // Mount rootfs and boot partition first so the bootloader environment
+    // (grubenv on the boot partition) is accessible before data is touched.
+    let early_result =
+        mount_early_partitions(&mut mount_manager, &layout, &config, &mut ods_status);
 
-    // Attempt to create bootloader and persist fsck results before propagating any
-    // mount error. This ensures results are stored even on the FsckRequiresReboot
-    // reboot path. For GRUB: requires boot partition mounted; best-effort if it isn't.
+    // Create bootloader now that boot is (hopefully) mounted.
     let mut bootloader_result = create_bootloader(&config.rootfs_dir);
     if let Ok(ref mut bl) = bootloader_result {
         info!("Bootloader type: {}", bl.bootloader_type());
-        // Persist fsck results: gzip+base64 encoded output (code + full text) to
-        // bootloader env, and full output to data partition log.
-        // Non-fatal: failures are logged as warnings.
+    }
+
+    // Persist any fsck results collected from early mounts before propagating
+    // errors, so they survive the FsckRequiresReboot reboot path.
+    if let Ok(ref mut bl) = bootloader_result {
         persist_fsck_results(&ods_status, bl.as_mut(), &config.rootfs_dir);
     } else {
         warn!("Could not create bootloader; fsck results will not be persisted to bootloader env");
     }
 
-    // Propagate mount failure after persistence attempt (FsckRequiresReboot → reboot)
-    mount_result?;
+    // Propagate early mount failure (rootfs or boot)
+    early_result?;
+
+    // Read os-release now that rootfs is mounted.
+    if let Err(e) = config.load_os_release() {
+        log::warn!("Failed to read os-release from rootfs: {}", e);
+    }
+    info!("release={}", config.is_release_image);
+
+    // Resize data partition before mounting it (first boot only, feature-gated).
+    #[cfg(feature = "resize-data")]
+    if config.has_resize_data() {
+        match bootloader_result {
+            Ok(ref mut bl) => {
+                if let (Some(data_dev), Some(rootblk)) = (
+                    layout.partitions.get(partition_names::DATA),
+                    layout.partitions.get(partition_names::ROOTBLK),
+                ) {
+                    omnect_os_init::runtime::resize_data::resize_data_if_needed(
+                        data_dev,
+                        rootblk,
+                        layout.table_type,
+                        bl.as_mut(),
+                    )?;
+                } else {
+                    warn!("resize-data: data or rootblk device not found in partition map");
+                }
+            }
+            Err(ref e) => {
+                warn!(
+                    "resize-data: bootloader unavailable ({}); skipping resize",
+                    e
+                );
+            }
+        }
+    }
+
+    // Mount remaining partitions (factory, cert, etc, data, tmpfs).
+    let late_result = mount_late_partitions(&mut mount_manager, &layout, &config, &mut ods_status);
+
+    // Persist fsck results from late mounts before propagating errors.
+    if let Ok(ref mut bl) = bootloader_result {
+        persist_fsck_results(&ods_status, bl.as_mut(), &config.rootfs_dir);
+    }
+
+    // Propagate late mount failure (may be FsckRequiresReboot → reboot)
+    late_result?;
 
     // Bootloader is expected to be available after a successful mount, but can
     // fail in edge cases (e.g. missing grubenv on a corrupted boot partition).
-    // Log a warning and continue — ODS bootloader-dependent state will be skipped
-    // rather than aborting a boot that otherwise succeeded.
     let bootloader = match bootloader_result {
         Ok(bl) => Some(bl),
         Err(e) => {
@@ -142,13 +185,6 @@ fn run() -> Result<()> {
             None
         }
     };
-
-    // Now that rootfs is mounted, read os-release for feature flags.
-    // Non-fatal: missing os-release means no features enabled.
-    if let Err(e) = config.load_os_release() {
-        log::warn!("Failed to read os-release from rootfs: {}", e);
-    }
-    info!("release={}", config.is_release_image);
 
     // Setup raw rootfs mount (before overlays)
     setup_raw_rootfs_mount(&mut mount_manager, &config.rootfs_dir)?;
@@ -210,8 +246,11 @@ fn fsck_and_record(
     }
 }
 
-/// Mount all required partitions
-fn mount_partitions(
+/// Mount rootfs and boot partition.
+///
+/// These must be up before the bootloader environment can be read (GRUB reads
+/// grubenv from the boot partition) and before os-release is accessible.
+fn mount_early_partitions(
     mm: &mut MountManager,
     layout: &PartitionLayout,
     config: &Config,
@@ -245,6 +284,20 @@ fn mount_partitions(
         fsck_and_record(boot_dev, partition_names::BOOT, ods_status, "vfat")?;
         mm.mount_readwrite(boot_dev, &boot_mount, "vfat")?;
     }
+
+    Ok(())
+}
+
+/// Mount the remaining data-bearing partitions (factory, cert, etc, data, tmpfs).
+///
+/// Called after early mounts and any pre-data-mount steps (e.g. resize-data).
+fn mount_late_partitions(
+    mm: &mut MountManager,
+    layout: &PartitionLayout,
+    config: &Config,
+    ods_status: &mut OdsStatus,
+) -> Result<()> {
+    let rootfs = &config.rootfs_dir;
 
     // Mount factory partition read-only
     if let Some(factory_dev) = layout.partitions.get(partition_names::FACTORY) {
