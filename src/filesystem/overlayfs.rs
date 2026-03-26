@@ -231,7 +231,10 @@ fn mount_overlay(
     target: &Path,
 ) -> Result<()> {
     let options = format!(
-        "lowerdir={},upperdir={},workdir={},index=off,uuid=off",
+        // uuid=null: lower and upper are on different partitions, so uuid=off
+        // is rejected by the kernel. uuid=null disables UUID-based file handle
+        // encoding without requiring co-located layers.
+        "lowerdir={},upperdir={},workdir={},index=off,uuid=null",
         lower.display(),
         upper.display(),
         work.display()
