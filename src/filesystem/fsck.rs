@@ -80,12 +80,11 @@ pub fn check_filesystem(device: &Path, fstype: &str) -> Result<FsckResult> {
     // Always repair automatically; this is an unattended initramfs boot.
     cmd.arg("-y");
 
-    // -C0 (write progress to stdout) is only supported by e2fsck; fsck.vfat and
-    // other non-ext implementations reject or mishandle it. Pass it only for ext
-    // filesystems to avoid spurious non-zero exit codes on vfat.
-    if fstype.starts_with("ext") {
-        cmd.arg("-C0");
-    }
+    // Explicitly specify the filesystem type. Without -t, fsck falls back to
+    // /etc/fstab probing which does not exist in the initramfs, causing code 8
+    // (operational error) on valid filesystems.
+    cmd.args(["-t", fstype]);
+
     cmd.arg(device);
 
     let output = cmd.output().map_err(|e| FilesystemError::FsckFailed {
