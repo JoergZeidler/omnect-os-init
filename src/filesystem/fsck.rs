@@ -8,7 +8,9 @@ use std::process::Command;
 use crate::error::FilesystemError;
 use crate::filesystem::Result;
 
-/// fsck command name
+/// fsck command — util-linux wrapper that dispatches to fsck.ext4 / fsck.fat
+/// based on the -t argument. Requires e2fsprogs-e2fsck in the initramfs image
+/// to provide the fsck.ext4 backend.
 const FSCK_CMD: &str = "/sbin/fsck";
 
 /// fsck exit codes
@@ -80,9 +82,8 @@ pub fn check_filesystem(device: &Path, fstype: &str) -> Result<FsckResult> {
     // Always repair automatically; this is an unattended initramfs boot.
     cmd.arg("-y");
 
-    // Explicitly specify the filesystem type. Without -t, fsck falls back to
-    // /etc/fstab probing which does not exist in the initramfs, causing code 8
-    // (operational error) on valid filesystems.
+    // Explicitly specify the filesystem type so the wrapper dispatches
+    // directly to fsck.ext4 / fsck.fat without needing blkid probing.
     cmd.args(["-t", fstype]);
 
     cmd.arg(device);
