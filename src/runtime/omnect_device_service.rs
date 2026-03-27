@@ -113,7 +113,7 @@ impl OdsStatus {
 /// - bootloader_updated: 600
 pub fn create_ods_runtime_files(
     status: &OdsStatus,
-    bootloader: Option<&dyn Bootloader>,
+    bootloader: Option<&mut Box<dyn Bootloader>>,
     rootfs_dir: &Path,
 ) -> Result<()> {
     let uid = lookup_uid(rootfs_dir, ODS_USER)?;
@@ -137,7 +137,7 @@ pub fn create_ods_runtime_files(
     // Handle update validation — requires a functional bootloader.
     // Skipped if bootloader is unavailable (e.g. missing grubenv on first boot).
     if let Some(bl) = bootloader {
-        handle_update_validation(ods_dir, bl, uid, gid)?;
+        handle_update_validation(ods_dir, bl.as_mut(), uid, gid)?;
     }
 
     // Copy factory reset status if exists
@@ -177,7 +177,7 @@ fn write_status_file(ods_dir: &Path, status: &OdsStatus) -> Result<()> {
 /// trigger files it creates.
 fn handle_update_validation(
     ods_dir: &Path,
-    bootloader: &dyn Bootloader,
+    bootloader: &mut dyn Bootloader,
     uid: u32,
     gid: u32,
 ) -> Result<()> {
@@ -231,9 +231,7 @@ fn handle_update_validation(
         }
     };
 
-    if let Some(value) = bootloader_updated
-        && (value == "1" || value.to_lowercase() == "true")
-    {
+    if bootloader_updated.is_some_and(|v| !v.is_empty()) {
         let marker_path = ods_dir.join(BOOTLOADER_UPDATED_FILE);
         fs::write(&marker_path, "1").map_err(|e| {
             InitramfsError::Io(std::io::Error::other(format!(
@@ -244,6 +242,14 @@ fn handle_update_validation(
         })?;
         set_ownership(&marker_path, uid, gid)?;
         set_mode(&marker_path, FILE_MODE_RESTRICTED)?;
+        bootloader
+            .set_env(vars::OMNECT_BOOTLOADER_UPDATED, None)
+            .map_err(|e| {
+                InitramfsError::Io(std::io::Error::other(format!(
+                    "Failed to clear omnect_bootloader_updated: {}",
+                    e
+                )))
+            })?;
         log::info!("Bootloader update marker created");
     }
 
@@ -453,10 +459,10 @@ mod tests {
     #[test]
     fn test_handle_update_validation_value_1() {
         let temp = TempDir::new().unwrap();
-        let bl =
+        let mut bl =
             crate::bootloader::create_mock_bootloader().with_env(vars::OMNECT_VALIDATE_UPDATE, "1");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(temp.path().join(UPDATE_VALIDATE_FILE).exists());
         assert!(!temp.path().join(UPDATE_VALIDATE_FAILED_FILE).exists());
@@ -466,10 +472,10 @@ mod tests {
     #[test]
     fn test_handle_update_validation_value_true() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader()
+        let mut bl = crate::bootloader::create_mock_bootloader()
             .with_env(vars::OMNECT_VALIDATE_UPDATE, "true");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(temp.path().join(UPDATE_VALIDATE_FILE).exists());
     }
@@ -477,10 +483,10 @@ mod tests {
     #[test]
     fn test_handle_update_validation_failed() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader()
+        let mut bl = crate::bootloader::create_mock_bootloader()
             .with_env(vars::OMNECT_VALIDATE_UPDATE, "failed");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(!temp.path().join(UPDATE_VALIDATE_FILE).exists());
         assert!(temp.path().join(UPDATE_VALIDATE_FAILED_FILE).exists());
@@ -489,10 +495,10 @@ mod tests {
     #[test]
     fn test_handle_update_validation_unexpected_value_creates_nothing() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader()
+        let mut bl = crate::bootloader::create_mock_bootloader()
             .with_env(vars::OMNECT_VALIDATE_UPDATE, "unexpected");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(!temp.path().join(UPDATE_VALIDATE_FILE).exists());
         assert!(!temp.path().join(UPDATE_VALIDATE_FAILED_FILE).exists());
@@ -501,31 +507,34 @@ mod tests {
     #[test]
     fn test_handle_update_validation_bootloader_updated() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader()
+        let mut bl = crate::bootloader::create_mock_bootloader()
             .with_env(vars::OMNECT_BOOTLOADER_UPDATED, "1");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(temp.path().join(BOOTLOADER_UPDATED_FILE).exists());
+        // Env var must be cleared after marker creation (matches legacy behaviour)
+        assert_eq!(bl.get_env(vars::OMNECT_BOOTLOADER_UPDATED).unwrap(), None);
     }
 
     #[test]
-    fn test_handle_update_validation_bootloader_updated_false_creates_nothing() {
+    fn test_handle_update_validation_bootloader_updated_any_nonempty_value() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader()
+        let mut bl = crate::bootloader::create_mock_bootloader()
             .with_env(vars::OMNECT_BOOTLOADER_UPDATED, "0");
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
-        assert!(!temp.path().join(BOOTLOADER_UPDATED_FILE).exists());
+        // Any non-empty value triggers marker creation (matches legacy [ -n ... ] check)
+        assert!(temp.path().join(BOOTLOADER_UPDATED_FILE).exists());
     }
 
     #[test]
     fn test_handle_update_validation_no_env_creates_nothing() {
         let temp = TempDir::new().unwrap();
-        let bl = crate::bootloader::create_mock_bootloader();
+        let mut bl = crate::bootloader::create_mock_bootloader();
 
-        handle_update_validation(temp.path(), &bl, current_uid(), current_gid()).unwrap();
+        handle_update_validation(temp.path(), &mut bl, current_uid(), current_gid()).unwrap();
 
         assert!(!temp.path().join(UPDATE_VALIDATE_FILE).exists());
         assert!(!temp.path().join(UPDATE_VALIDATE_FAILED_FILE).exists());

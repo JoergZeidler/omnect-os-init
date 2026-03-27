@@ -177,7 +177,7 @@ fn run() -> Result<()> {
 
     // Bootloader is expected to be available after a successful mount, but can
     // fail in edge cases (e.g. missing grubenv on a corrupted boot partition).
-    let bootloader = match bootloader_result {
+    let mut bootloader = match bootloader_result {
         Ok(bl) => Some(bl),
         Err(e) => {
             warn!(
@@ -202,7 +202,7 @@ fn run() -> Result<()> {
     create_fs_links(&config.rootfs_dir)?;
 
     // Create ODS runtime files
-    create_ods_runtime_files(&ods_status, bootloader.as_deref(), &config.rootfs_dir)?;
+    create_ods_runtime_files(&ods_status, bootloader.as_mut(), &config.rootfs_dir)?;
 
     info!("omnect-os-initramfs completed successfully");
 
