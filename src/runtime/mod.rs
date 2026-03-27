@@ -5,6 +5,8 @@
 //! - fs-link symbolic link creation
 //! - switch_root to final rootfs
 
+#[cfg(feature = "factory-reset")]
+pub mod factory_reset;
 mod fs_link;
 mod omnect_device_service;
 #[cfg(feature = "resize-data")]

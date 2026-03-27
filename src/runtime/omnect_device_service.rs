@@ -4,13 +4,15 @@
 
 use std::collections::HashMap;
 use std::fs;
-use std::path::{Path, PathBuf};
+use std::path::Path;
 
 use nix::unistd::{Gid, Uid, chown};
 use serde::Serialize;
 
 use crate::bootloader::{Bootloader, vars};
 use crate::error::{InitramfsError, Result};
+#[cfg(feature = "factory-reset")]
+use crate::runtime::factory_reset::status::copy_status_to_ods;
 
 /// Directory for ODS runtime files.
 /// Written to the initramfs /run tmpfs; switch_root moves /run into the new
@@ -28,9 +30,6 @@ const UPDATE_VALIDATE_FAILED_FILE: &str = "omnect_validate_update_failed";
 
 /// Bootloader updated marker
 const BOOTLOADER_UPDATED_FILE: &str = "omnect_bootloader_updated";
-
-/// Factory reset status file (in /tmp)
-const FACTORY_RESET_STATUS_FILE: &str = "/tmp/factory-reset.json";
 
 /// Name of the omnect-device-service user and group in the rootfs
 const ODS_USER: &str = "omnect_device_service";
@@ -51,10 +50,6 @@ pub struct OdsStatus {
     /// Fsck results for each partition
     #[serde(skip_serializing_if = "HashMap::is_empty")]
     pub fsck: HashMap<String, FsckStatus>,
-
-    /// Factory reset status (if performed)
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub factory_reset: Option<FactoryResetStatus>,
 }
 
 /// Fsck status for a single partition
@@ -64,22 +59,6 @@ pub struct FsckStatus {
     pub code: i32,
     /// Output from fsck (may be compressed in bootloader)
     pub output: String,
-}
-
-/// Factory reset execution status
-#[derive(Debug, Clone, Serialize)]
-pub struct FactoryResetStatus {
-    /// Status code: 0=success, 1=invalid, 2=error, 3=config_error
-    pub status: u32,
-    /// Error message if failed
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub error: Option<String>,
-    /// Additional context
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub context: Option<String>,
-    /// Paths that were preserved
-    #[serde(default, skip_serializing_if = "Vec::is_empty")]
-    pub paths: Vec<String>,
 }
 
 impl OdsStatus {
@@ -92,11 +71,6 @@ impl OdsStatus {
     pub fn add_fsck_result(&mut self, partition: &str, code: i32, output: String) {
         self.fsck
             .insert(partition.to_string(), FsckStatus { code, output });
-    }
-
-    /// Set factory reset status
-    pub fn set_factory_reset(&mut self, status: FactoryResetStatus) {
-        self.factory_reset = Some(status);
     }
 }
 
@@ -140,8 +114,9 @@ pub fn create_ods_runtime_files(
         handle_update_validation(ods_dir, bl.as_mut(), uid, gid)?;
     }
 
-    // Copy factory reset status if exists
-    if let Some(dst) = copy_factory_reset_status(ods_dir)? {
+    // Copy factory reset status if the factory-reset feature ran this boot
+    #[cfg(feature = "factory-reset")]
+    if let Some(dst) = copy_status_to_ods(ods_dir)? {
         set_ownership(&dst, uid, gid)?;
         set_mode(&dst, FILE_MODE_RESTRICTED)?;
     }
@@ -254,29 +229,6 @@ fn handle_update_validation(
     }
 
     Ok(())
-}
-
-/// Copy factory reset status from /tmp if it exists.
-/// Returns the destination path if the file was copied.
-fn copy_factory_reset_status(ods_dir: &Path) -> Result<Option<PathBuf>> {
-    let src = PathBuf::from(FACTORY_RESET_STATUS_FILE);
-
-    if !src.exists() {
-        return Ok(None);
-    }
-
-    let dst = ods_dir.join("factory-reset.json");
-    fs::copy(&src, &dst).map_err(|e| {
-        InitramfsError::Io(std::io::Error::other(format!(
-            "Failed to copy {} to {}: {}",
-            src.display(),
-            dst.display(),
-            e
-        )))
-    })?;
-    log::debug!("Copied factory reset status to ODS dir");
-
-    Ok(Some(dst))
 }
 
 /// Look up the numeric UID for a user in the rootfs /etc/passwd.
@@ -404,7 +356,6 @@ mod tests {
     fn test_ods_status_default() {
         let status = OdsStatus::default();
         assert!(status.fsck.is_empty());
-        assert!(status.factory_reset.is_none());
     }
 
     #[test]
@@ -440,20 +391,6 @@ mod tests {
 
         let content = fs::read_to_string(status_path).unwrap();
         assert!(content.contains("{"));
-    }
-
-    #[test]
-    fn test_factory_reset_status_serialization() {
-        let status = FactoryResetStatus {
-            status: 0,
-            error: None,
-            context: Some("normal".to_string()),
-            paths: vec!["/etc/hostname".to_string()],
-        };
-
-        let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("\"status\":0"));
-        assert!(json.contains("\"paths\""));
     }
 
     #[test]

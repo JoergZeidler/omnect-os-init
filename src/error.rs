@@ -168,6 +168,9 @@ pub enum FactoryResetError {
     #[error("Invalid factory reset configuration: {0}")]
     InvalidConfig(String),
 
+    #[error("Missing required field in factory reset config: {0}")]
+    MissingField(String),
+
     #[error("Backup failed for path '{path}': {reason}")]
     BackupFailed { path: String, reason: String },
 
@@ -176,6 +179,12 @@ pub enum FactoryResetError {
 
     #[error("Wipe failed for partition '{partition}': {reason}")]
     WipeFailed { partition: String, reason: String },
+
+    #[error("Reformat failed for '{device}': {reason}")]
+    ReformatFailed { device: String, reason: String },
+
+    #[error("Mount error during factory reset: {0}")]
+    MountError(String),
 
     #[error("IO error: {0}")]
     Io(#[from] std::io::Error),

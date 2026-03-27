@@ -134,6 +134,32 @@ fn run() -> Result<()> {
     }
     info!("release={}", config.is_release_image);
 
+    // Check for factory reset before mounting any data partitions.
+    // If triggered, run the full reset sequence and then switch_root;
+    // all subsequent steps (late mounts, overlays, ODS) are skipped.
+    #[cfg(feature = "factory-reset")]
+    {
+        use omnect_os_init::bootloader::BootloaderType;
+        use omnect_os_init::runtime::factory_reset::factory_reset_requested;
+
+        if let Ok(ref mut bl) = bootloader_result
+            && let Some(json) = factory_reset_requested(bl.as_mut())
+        {
+            let is_grub = bl.bootloader_type() == BootloaderType::Grub;
+            let persistent_var_log = config.has_persistent_var_log();
+            omnect_os_init::runtime::factory_reset::run_factory_reset(
+                &json,
+                bl.as_mut(),
+                &config.rootfs_dir,
+                is_grub,
+                persistent_var_log,
+            )?;
+            mount_manager.release();
+            switch_root(&config.rootfs_dir, None)?;
+            return Ok(());
+        }
+    }
+
     // Resize data partition before mounting it (first boot only).
     // The resize-data script is installed by Yocto only when DISTRO_FEATURES
     // contains "resize-data"; the cargo feature flag mirrors that build-time
