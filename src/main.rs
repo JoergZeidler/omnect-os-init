@@ -162,8 +162,8 @@ fn run() -> Result<()> {
             persist_fsck_results(&ods_status, bl.as_mut(), &config.rootfs_dir);
             late_result?;
             setup_raw_rootfs_mount(&mut mount_manager, &config.rootfs_dir)?;
-            let overlay_config = OverlayConfig::new(&config.rootfs_dir)
-                .with_persistent_var_log(persistent_var_log);
+            let overlay_config =
+                OverlayConfig::new(&config.rootfs_dir).with_persistent_var_log(persistent_var_log);
             setup_etc_overlay(&mut mount_manager, &overlay_config)?;
             setup_data_overlay(&mut mount_manager, &overlay_config)?;
             create_fs_links(&config.rootfs_dir)?;

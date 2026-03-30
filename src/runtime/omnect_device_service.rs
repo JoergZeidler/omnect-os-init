@@ -11,8 +11,6 @@ use serde::Serialize;
 
 use crate::bootloader::{Bootloader, vars};
 use crate::error::{InitramfsError, Result};
-#[cfg(feature = "factory-reset")]
-use crate::runtime::factory_reset::status::copy_status_to_ods;
 
 /// Directory for ODS runtime files.
 /// Written to the initramfs /run tmpfs; switch_root moves /run into the new
@@ -114,12 +112,11 @@ pub fn create_ods_runtime_files(
         handle_update_validation(ods_dir, bl.as_mut(), uid, gid)?;
     }
 
-    // Copy factory reset status if the factory-reset feature ran this boot
+    // Merge factory-reset status into the main ODS JSON under "factory-reset"
+    // key and delete /tmp/factory-reset.json — matches legacy behaviour in
+    // omnect-device-service-setup: factory_reset_status_handling().
     #[cfg(feature = "factory-reset")]
-    if let Some(dst) = copy_status_to_ods(ods_dir)? {
-        set_ownership(&dst, uid, gid)?;
-        set_mode(&dst, FILE_MODE_RESTRICTED)?;
-    }
+    merge_factory_reset_into_ods(ods_dir)?;
 
     log::info!("Created ODS runtime files in {}", ods_dir.display());
 
@@ -145,6 +142,85 @@ fn write_status_file(ods_dir: &Path, status: &OdsStatus) -> Result<()> {
     })?;
     log::debug!("Wrote ODS status to {}", status_path.display());
 
+    Ok(())
+}
+
+/// Merge factory-reset status into the main ODS JSON under the `"factory-reset"` key.
+///
+/// Matches legacy `factory_reset_status_handling()`:
+/// ```sh
+/// cat omnect-os-initramfs.json \
+///   | jq --argjson factory_reset "$(cat /tmp/factory-reset.json)" \
+///         '."factory-reset"=$factory_reset' > /tmp/omnect-os-initramfs.json
+/// mv /tmp/omnect-os-initramfs.json omnect-os-initramfs.json
+/// rm /tmp/factory-reset.json
+/// ```
+#[cfg(feature = "factory-reset")]
+fn merge_factory_reset_into_ods(ods_dir: &Path) -> Result<()> {
+    use crate::runtime::factory_reset::status::FACTORY_RESET_STATUS_TMP;
+
+    let tmp_path = std::path::Path::new(FACTORY_RESET_STATUS_TMP);
+    if !tmp_path.exists() {
+        return Ok(());
+    }
+
+    let ods_path = ods_dir.join(ODS_STATUS_FILE);
+
+    // Read both JSON files as generic Values so we don't need to model every field.
+    let ods_raw = fs::read_to_string(&ods_path).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to read {}: {}",
+            ods_path.display(),
+            e
+        )))
+    })?;
+    let fr_raw = fs::read_to_string(tmp_path).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to read {}: {}",
+            tmp_path.display(),
+            e
+        )))
+    })?;
+
+    let mut ods_json: serde_json::Value = serde_json::from_str(&ods_raw).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to parse ODS status JSON: {}",
+            e
+        )))
+    })?;
+    let fr_json: serde_json::Value = serde_json::from_str(&fr_raw).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to parse factory-reset status JSON: {}",
+            e
+        )))
+    })?;
+
+    ods_json["factory-reset"] = fr_json;
+
+    let merged = serde_json::to_string_pretty(&ods_json).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to serialize merged ODS status: {}",
+            e
+        )))
+    })?;
+    fs::write(&ods_path, merged).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to write merged ODS status to {}: {}",
+            ods_path.display(),
+            e
+        )))
+    })?;
+
+    // Remove the tmp file — it has served its purpose.
+    fs::remove_file(tmp_path).map_err(|e| {
+        InitramfsError::Io(std::io::Error::other(format!(
+            "Failed to remove {}: {}",
+            tmp_path.display(),
+            e
+        )))
+    })?;
+
+    log::debug!("Merged factory-reset status into ODS JSON");
     Ok(())
 }
 

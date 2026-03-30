@@ -2,7 +2,6 @@
 //! copied by omnect-device-service into its runtime directory.
 
 use std::fs;
-use std::path::Path;
 
 use serde::Serialize;
 
@@ -83,26 +82,6 @@ pub fn write_status(status: &FactoryResetStatus) -> Result<()> {
     })
 }
 
-/// Copy the status file to the ODS runtime directory.
-/// Called by omnect-device-service setup after factory reset completes.
-pub fn copy_status_to_ods(ods_dir: &Path) -> Result<Option<std::path::PathBuf>> {
-    let src = Path::new(FACTORY_RESET_STATUS_TMP);
-    if !src.exists() {
-        return Ok(None);
-    }
-    let dst = ods_dir.join("factory-reset.json");
-    fs::copy(src, &dst).map_err(|e| {
-        InitramfsError::Io(std::io::Error::other(format!(
-            "Failed to copy {} to {}: {}",
-            src.display(),
-            dst.display(),
-            e
-        )))
-    })?;
-    log::debug!("Copied factory reset status to ODS dir");
-    Ok(Some(dst))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -131,11 +110,4 @@ mod tests {
         assert_eq!(json["context"], "etc/hostname:restore");
     }
 
-    #[test]
-    fn test_copy_status_to_ods_missing() {
-        let temp = TempDir::new().unwrap();
-        // Status file does not exist — should return None without error
-        let result = copy_status_to_ods(temp.path()).unwrap();
-        assert!(result.is_none());
-    }
 }
