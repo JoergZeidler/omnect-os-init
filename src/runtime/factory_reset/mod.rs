@@ -28,7 +28,6 @@ const FACTORY_RESET_BACKUP_DIR: &str = "/tmp/factory_reset/backup";
 
 /// Omnect partition device symlinks
 mod omnect_dev {
-    pub const ROOT_CURRENT: &str = "/dev/omnect/rootCurrent";
     pub const FACTORY: &str = "/dev/omnect/factory";
     pub const ETC: &str = "/dev/omnect/etc";
     pub const DATA: &str = "/dev/omnect/data";
@@ -194,18 +193,16 @@ pub fn run_factory_reset(
     Ok(())
 }
 
-/// Mount all partitions needed during factory reset.
+/// Mount partitions needed during factory reset.
 ///
-/// Order matches legacy factory_reset_mount():
-/// rootCurrent (ro) → factory (ro) → etc (rw) → data (rw)
+/// rootCurrent is already mounted at `rootfs` by `mount_early_partitions()` —
+/// we must not remount it. Only factory, etc and data are mounted here.
+/// Order matches legacy factory_reset_mount() minus the rootCurrent step.
 fn factory_reset_mount(
     mm: &mut MountManager,
     rootfs: &Path,
     _persistent_var_log: bool,
 ) -> Result<()> {
-    mm.mount_readonly(omnect_dev::ROOT_CURRENT, rootfs, "ext4")
-        .map_err(|e| FactoryResetError::MountError(format!("rootCurrent: {}", e)))?;
-
     let factory_mount = rootfs.join("mnt/factory");
     std::fs::create_dir_all(&factory_mount)?;
     mm.mount_readonly(omnect_dev::FACTORY, &factory_mount, "ext4")
