@@ -154,6 +154,9 @@ fn run() -> Result<()> {
                 is_grub,
                 persistent_var_log,
             )?;
+            // Write ODS status so factory-reset.json is available after switch_root.
+            // /run is moved into the new root via MS_MOVE and survives switch_root.
+            create_ods_runtime_files(&ods_status, Some(bl), &config.rootfs_dir)?;
             mount_manager.release();
             switch_root(&config.rootfs_dir, None)?;
             return Ok(());
