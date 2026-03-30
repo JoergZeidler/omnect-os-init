@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 
 use crate::bootloader::{Bootloader, vars};
 use crate::error::{FactoryResetError, InitramfsError, Result};
-use crate::filesystem::MountManager;
+use crate::filesystem::{MountManager, OverlayConfig, setup_data_overlay, setup_etc_overlay};
 use crate::runtime::factory_reset::{
     backup_restore::{RestoreResult, backup_all, restore_all},
     config::{FactoryResetConfig, build_preserve_list},
@@ -197,11 +197,14 @@ pub fn run_factory_reset(
 ///
 /// rootCurrent is already mounted at `rootfs` by `mount_early_partitions()` —
 /// we must not remount it. Only factory, etc and data are mounted here.
-/// Order matches legacy factory_reset_mount() minus the rootCurrent step.
+///
+/// Crucially, overlays are set up at /rootfs/etc and /rootfs/home so that
+/// find_nested_mountpoint() can locate /rootfs/etc as a mountpoint during
+/// restore (matching legacy `setup_etc_partition` + `setup_data_partition`).
 fn factory_reset_mount(
     mm: &mut MountManager,
     rootfs: &Path,
-    _persistent_var_log: bool,
+    persistent_var_log: bool,
 ) -> Result<()> {
     let factory_mount = rootfs.join("mnt/factory");
     std::fs::create_dir_all(&factory_mount)?;
@@ -217,6 +220,15 @@ fn factory_reset_mount(
     std::fs::create_dir_all(&data_mount)?;
     mm.mount_readwrite(omnect_dev::DATA, &data_mount, "ext4")
         .map_err(|e| FactoryResetError::MountError(format!("data: {}", e)))?;
+
+    // Set up overlays so /rootfs/etc and /rootfs/home are mountpoints.
+    // This is required for find_nested_mountpoint() to work during restore,
+    // and matches legacy setup_etc_partition / setup_data_partition calls.
+    let overlay_config = OverlayConfig::new(rootfs).with_persistent_var_log(persistent_var_log);
+    setup_etc_overlay(mm, &overlay_config)
+        .map_err(|e| FactoryResetError::MountError(format!("etc overlay: {}", e)))?;
+    setup_data_overlay(mm, &overlay_config)
+        .map_err(|e| FactoryResetError::MountError(format!("data overlay: {}", e)))?;
 
     Ok(())
 }
