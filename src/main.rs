@@ -154,15 +154,19 @@ fn run() -> Result<()> {
                 is_grub,
                 persistent_var_log,
             )?;
-            // Mount var/volatile tmpfs — required by network and other services
-            // at early boot. Normal boot gets this from mount_late_partitions;
-            // the factory-reset path skips that function so we do it here.
-            let var_volatile = config.rootfs_dir.join("var/volatile");
-            mount_manager.mount_tmpfs(&var_volatile, MsFlags::empty(), None)?;
-            // Create fs-links (e.g. /etc/mtab symlink) needed by userspace.
+            // After factory reset unmounts its working mounts, run the full
+            // normal mount sequence so the new root has all partitions and
+            // overlays in place — identical to non-factory-reset boot.
+            let late_result =
+                mount_late_partitions(&mut mount_manager, &layout, &config, &mut ods_status);
+            persist_fsck_results(&ods_status, bl.as_mut(), &config.rootfs_dir);
+            late_result?;
+            setup_raw_rootfs_mount(&mut mount_manager, &config.rootfs_dir)?;
+            let overlay_config = OverlayConfig::new(&config.rootfs_dir)
+                .with_persistent_var_log(persistent_var_log);
+            setup_etc_overlay(&mut mount_manager, &overlay_config)?;
+            setup_data_overlay(&mut mount_manager, &overlay_config)?;
             create_fs_links(&config.rootfs_dir)?;
-            // Write ODS status so factory-reset.json is available after switch_root.
-            // /run is moved into the new root via MS_MOVE and survives switch_root.
             create_ods_runtime_files(&ods_status, Some(bl), &config.rootfs_dir)?;
             mount_manager.release();
             switch_root(&config.rootfs_dir, None)?;
