@@ -45,8 +45,9 @@ const FILE_MODE_READABLE: u32 = 0o644;
 /// Status information for omnect-device-service
 #[derive(Debug, Clone, Default, Serialize)]
 pub struct OdsStatus {
-    /// Fsck results for each partition
-    #[serde(skip_serializing_if = "HashMap::is_empty")]
+    /// Fsck results for each partition. Always present in JSON (empty object
+    /// when all partitions are clean), matching legacy `fsck_handling()` which
+    /// unconditionally writes `.fsck = {}`.
     pub fsck: HashMap<String, FsckStatus>,
 }
 
