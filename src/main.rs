@@ -154,6 +154,13 @@ fn run() -> Result<()> {
                 is_grub,
                 persistent_var_log,
             )?;
+            // Mount var/volatile tmpfs — required by network and other services
+            // at early boot. Normal boot gets this from mount_late_partitions;
+            // the factory-reset path skips that function so we do it here.
+            let var_volatile = config.rootfs_dir.join("var/volatile");
+            mount_manager.mount_tmpfs(&var_volatile, MsFlags::empty(), None)?;
+            // Create fs-links (e.g. /etc/mtab symlink) needed by userspace.
+            create_fs_links(&config.rootfs_dir)?;
             // Write ODS status so factory-reset.json is available after switch_root.
             // /run is moved into the new root via MS_MOVE and survives switch_root.
             create_ods_runtime_files(&ods_status, Some(bl), &config.rootfs_dir)?;
