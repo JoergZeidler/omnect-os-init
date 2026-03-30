@@ -109,5 +109,4 @@ mod tests {
         assert_eq!(json["error"], "66");
         assert_eq!(json["context"], "etc/hostname:restore");
     }
-
 }

@@ -7,7 +7,7 @@ use std::fs;
 use std::path::Path;
 
 use nix::unistd::{Gid, Uid, chown};
-use serde::Serialize;
+use serde::{Serialize, Serializer};
 
 use crate::bootloader::{Bootloader, vars};
 use crate::error::{InitramfsError, Result};
@@ -50,13 +50,23 @@ pub struct OdsStatus {
     pub fsck: HashMap<String, FsckStatus>,
 }
 
-/// Fsck status for a single partition
-#[derive(Debug, Clone, Serialize)]
+/// Fsck status for a single partition.
+///
+/// Serializes as a plain string (the raw fsck output) to match the legacy
+/// `omnect-device-service-setup` `fsck_handling()` JSON format:
+///   `{"boot": "<raw text>", "data": "<raw text>"}`
+#[derive(Debug, Clone)]
 pub struct FsckStatus {
     /// Exit code from fsck
     pub code: i32,
-    /// Output from fsck (may be compressed in bootloader)
+    /// Raw output from fsck (stdout + stderr)
     pub output: String,
+}
+
+impl Serialize for FsckStatus {
+    fn serialize<S: Serializer>(&self, serializer: S) -> std::result::Result<S::Ok, S::Error> {
+        serializer.serialize_str(&self.output)
+    }
 }
 
 impl OdsStatus {
@@ -65,10 +75,16 @@ impl OdsStatus {
         Self::default()
     }
 
-    /// Add fsck result for a partition
+    /// Add fsck result for a partition.
+    ///
+    /// Only records non-zero exit codes — clean partitions have no entry in the
+    /// JSON, matching legacy behaviour where `save_fsck_status` is only called
+    /// on error (`if [ ${fsck_res} -ne 0 ]`).
     pub fn add_fsck_result(&mut self, partition: &str, code: i32, output: String) {
-        self.fsck
-            .insert(partition.to_string(), FsckStatus { code, output });
+        if code != 0 {
+            self.fsck
+                .insert(partition.to_string(), FsckStatus { code, output });
+        }
     }
 }
 
@@ -437,22 +453,35 @@ mod tests {
     #[test]
     fn test_ods_status_add_fsck() {
         let mut status = OdsStatus::new();
+        // code 0: clean, should not be recorded
         status.add_fsck_result("boot", 0, "clean".to_string());
+        // code 1: errors corrected, should be recorded
         status.add_fsck_result("data", 1, "errors corrected".to_string());
 
-        assert_eq!(status.fsck.len(), 2);
-        assert_eq!(status.fsck.get("boot").unwrap().code, 0);
+        assert_eq!(status.fsck.len(), 1);
+        assert!(status.fsck.get("boot").is_none());
         assert_eq!(status.fsck.get("data").unwrap().code, 1);
     }
 
     #[test]
     fn test_ods_status_serialization() {
         let mut status = OdsStatus::new();
+        // code 0 should not appear in JSON at all
         status.add_fsck_result("boot", 0, "clean".to_string());
+        // code 1 should appear as plain string
+        status.add_fsck_result("data", 1, "errors corrected".to_string());
 
         let json = serde_json::to_string(&status).unwrap();
-        assert!(json.contains("\"boot\""));
-        assert!(json.contains("\"code\":0"));
+        assert!(
+            !json.contains("\"boot\""),
+            "clean partitions must not appear"
+        );
+        assert!(json.contains("\"data\""));
+        assert!(
+            json.contains("\"errors corrected\""),
+            "value must be a plain string"
+        );
+        assert!(!json.contains("\"code\""), "must not have code field");
     }
 
     #[test]
