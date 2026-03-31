@@ -47,23 +47,26 @@ pub fn factory_reset_requested(bootloader: &mut dyn Bootloader) -> Option<String
 /// Step sequence (mirrors legacy factory_reset_run):
 /// 1.  Write `null` sentinel to `/tmp/factory-reset.json`
 /// 2.  Clear `factory-reset` bootloader env var
-/// 3.  If GRUB: sync + unmount `/rootfs/boot`
-/// 4.  Mount: rootCurrent (ro), factory (ro), etc (rw), data (rw)
-/// 5.  Parse JSON config: extract mode and preserve array
-/// 6.  Build preserve_list (mandatory + applications + custom keys)
-/// 7.  Backup preserve_list → `/tmp/factory_reset/backup/`
-/// 8.  Unmount all
-/// 9.  Mode 1 = no wipe (modes 2-4 are PR8)
-/// 10. Reformat `/dev/omnect/data` (label=data) + `/dev/omnect/etc` (label=etc)
-/// 11. Remount: rootCurrent (ro), factory (ro), etc (rw), data (rw)
-/// 12. Restore preserve_list with nested-mount detection
-/// 13. Unmount all
-/// 14. Write final status JSON to `/tmp/factory-reset.json`
+/// 3.  Mount: factory (ro), etc (rw), data (rw) + overlays
+/// 4.  Parse JSON config: extract mode and preserve array
+/// 5.  Build preserve_list (mandatory + applications + custom keys)
+/// 6.  Backup preserve_list → `/tmp/factory_reset/backup/`
+/// 7.  Unmount all
+/// 8.  Mode 1 = no wipe (modes 2-4 are PR8)
+/// 9.  Reformat `/dev/omnect/data` (label=data) + `/dev/omnect/etc` (label=etc)
+/// 10. Remount: factory (ro), etc (rw), data (rw) + overlays
+/// 11. Restore preserve_list with nested-mount detection
+/// 12. Unmount all
+/// 13. Write final status JSON to `/tmp/factory-reset.json`
+///
+/// Note: the boot partition remains mounted throughout (mounted by
+/// `mount_early_partitions`). Legacy unmounts/remounts it around grubenv
+/// access due to its lazy-mount model; Rust GRUB uses a fixed path so no
+/// unmount/remount cycle is needed here.
 pub fn run_factory_reset(
     factory_reset_json: &str,
     bootloader: &mut dyn Bootloader,
     rootfs: &Path,
-    is_grub: bool,
     persistent_var_log: bool,
 ) -> Result<()> {
     // Step 1: sentinel so a crash mid-way leaves a detectable marker
@@ -77,18 +80,11 @@ pub fn run_factory_reset(
         )))
     })?;
 
-    // Step 3: GRUB already mounted /boot to access grubenv; unmount it now so
-    // factory_reset_mount/umount can manage it without conflicts.
-    if is_grub {
-        sync_system();
-        unmount_boot(rootfs)?;
-    }
-
-    // Step 4: mount partitions for backup
+    // Step 3: mount partitions for backup
     let mut mm = MountManager::new();
     factory_reset_mount(&mut mm, rootfs, persistent_var_log)?;
 
-    // Step 5-6: parse config and build preserve list
+    // Step 4-5: parse config and build preserve list
     let cfg = match FactoryResetConfig::parse(factory_reset_json) {
         Ok(c) => c,
         Err(e) => {
@@ -123,7 +119,7 @@ pub fn run_factory_reset(
 
     log::info!("factory-reset preserve_list={:?}", preserve_list);
 
-    // Step 7: backup
+    // Step 6: backup
     let backup_dir = PathBuf::from(FACTORY_RESET_BACKUP_DIR);
     backup_all(rootfs, &preserve_list, &backup_dir).inspect_err(|e| {
         let _ = write_status(&FactoryResetStatus::error(
@@ -134,10 +130,10 @@ pub fn run_factory_reset(
         ));
     })?;
 
-    // Step 8: unmount before wipe/reformat
+    // Step 7: unmount before wipe/reformat
     factory_reset_umount(&mut mm)?;
 
-    // Step 9: wipe (mode 1 = none; modes 2-4 are PR8)
+    // Step 8: wipe (mode 1 = none; modes 2-4 are PR8)
     let mut warnings: Vec<String> = Vec::new();
     match cfg.mode {
         1 => {} // no wipe
@@ -151,21 +147,21 @@ pub fn run_factory_reset(
         }
     }
 
-    // Step 10: reformat
+    // Step 9: reformat
     reformat_ext4(Path::new(omnect_dev::DATA), "data")?;
     reformat_ext4(Path::new(omnect_dev::ETC), "etc")?;
 
-    // Step 11: remount for restore
+    // Step 10: remount for restore
     let mut mm2 = MountManager::new();
     factory_reset_mount(&mut mm2, rootfs, persistent_var_log)?;
 
-    // Step 12: restore
+    // Step 11: restore
     let restore_result = restore_all(rootfs, &preserve_list, &backup_dir)?;
 
-    // Step 13: unmount
+    // Step 12: unmount
     factory_reset_umount(&mut mm2)?;
 
-    // Step 14: write final status
+    // Step 13: write final status
     let final_status = match restore_result {
         RestoreResult::Success => {
             let context = build_warnings_context(None, &warnings);
@@ -238,18 +234,6 @@ fn factory_reset_umount(mm: &mut MountManager) -> Result<()> {
     mm.umount_all()
         .map_err(|e| FactoryResetError::MountError(format!("umount: {}", e)))?;
     Ok(())
-}
-
-/// Unmount the boot partition (GRUB only — it was mounted during early init).
-fn unmount_boot(rootfs: &Path) -> Result<()> {
-    let boot_mount = rootfs.join("boot");
-    nix::mount::umount2(&boot_mount, nix::mount::MntFlags::empty())
-        .map_err(|e| FactoryResetError::MountError(format!("umount boot: {}", e)))?;
-    Ok(())
-}
-
-fn sync_system() {
-    let _ = std::process::Command::new("/bin/sync").status();
 }
 
 /// Combine restore error context with accumulated wipe warnings.

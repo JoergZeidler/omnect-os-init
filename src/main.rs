@@ -139,19 +139,16 @@ fn run() -> Result<()> {
     // all subsequent steps (late mounts, overlays, ODS) are skipped.
     #[cfg(feature = "factory-reset")]
     {
-        use omnect_os_init::bootloader::BootloaderType;
         use omnect_os_init::runtime::factory_reset::factory_reset_requested;
 
         if let Ok(ref mut bl) = bootloader_result
             && let Some(json) = factory_reset_requested(bl.as_mut())
         {
-            let is_grub = bl.bootloader_type() == BootloaderType::Grub;
             let persistent_var_log = config.has_persistent_var_log();
             omnect_os_init::runtime::factory_reset::run_factory_reset(
                 &json,
                 bl.as_mut(),
                 &config.rootfs_dir,
-                is_grub,
                 persistent_var_log,
             )?;
             // After factory reset unmounts its working mounts, run the full
